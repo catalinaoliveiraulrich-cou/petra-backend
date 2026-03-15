@@ -29,7 +29,10 @@ def search():
                 "price": 2100,
                 "beds": 1,
                 "baths": 1,
-                "why_it_fits": "Pet-friendly and within your budget.",
+                "reasons": [
+                    "Pet-friendly",
+                    "Within your budget"
+                ],
                 "tradeoff": "Slightly smaller living area."
             }
         ]
