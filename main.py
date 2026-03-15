@@ -170,9 +170,9 @@ def extract_lifestyle_preferences(query: str) -> Dict[str, bool]:
     return prefs
 
 
-def get_nearby_places(lat: float, lng: float, place_type: str, radius: float = 800.0) -> List[dict]:
+def get_nearby_places(lat: float, lng: float, place_type: str, radius: float = 800.0):
     if not GOOGLE_PLACES_API_KEY:
-        return []
+        raise ValueError("Missing GOOGLE_PLACES_API_KEY")
 
     url = "https://places.googleapis.com/v1/places:searchNearby"
 
@@ -197,7 +197,10 @@ def get_nearby_places(lat: float, lng: float, place_type: str, radius: float = 8
     }
 
     response = requests.post(url, headers=headers, json=body, timeout=20)
-    response.raise_for_status()
+
+    if not response.ok:
+        raise ValueError(f"Google Places error {response.status_code}: {response.text}")
+
     data = response.json()
     return data.get("places", [])
 
@@ -359,11 +362,27 @@ def debug_env():
         "google_places_key_length": len(GOOGLE_PLACES_API_KEY) if GOOGLE_PLACES_API_KEY else 0,
     }
 
+@app.get("/debug-rentcast")
+def debug_rentcast():
+    city = "Miami"
+    state = "FL"
+    listings = get_rental_listings(city=city, state=state, limit=1)
+    return {
+        "count": len(listings) if isinstance(listings, list) else 0,
+        "first_listing": listings[0] if listings else None,
+    }
 
 @app.get("/test-places")
 def test_places():
-    lat, lng = 30.2672, -97.7431
-    return analyze_neighborhood(lat, lng)
+    lat, lng = 30.2672, -97.7431  # Austin test location
+    try:
+        return analyze_neighborhood(lat, lng)
+    except Exception as e:
+        return {
+            "error": str(e),
+            "has_google_places_key": GOOGLE_PLACES_API_KEY is not None,
+            "google_places_key_length": len(GOOGLE_PLACES_API_KEY) if GOOGLE_PLACES_API_KEY else 0,
+        }
 
 
 @app.post("/search")
@@ -379,7 +398,7 @@ def search(payload: SearchRequest):
     except Exception as e:
         return {
             "summary": f"I couldn’t fetch live listings for {city}, {state}.",
-            "error": str(e),
+            "error": f"RentCast error: {str(e)}",
             "matches": [],
         }
 
@@ -392,57 +411,63 @@ def search(payload: SearchRequest):
     enriched_matches = []
 
     for listing in listings:
-        lat = listing.get("latitude")
-        lng = listing.get("longitude")
+        try:
+            lat = listing.get("latitude")
+            lng = listing.get("longitude")
 
-        neighborhood = {
-            "cafe_count": 0,
-            "gym_count": 0,
-            "park_count": 0,
-            "transit_count": 0,
-            "walkability_hint": 0,
-        }
-
-        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
-            try:
-                neighborhood = analyze_neighborhood(lat, lng)
-            except Exception:
-                pass
-
-        score = score_listing(
-            listing=listing,
-            budget=budget,
-            beds=beds,
-            pets=pets,
-            lifestyle=lifestyle,
-            neighborhood=neighborhood,
-        )
-
-        enriched_matches.append(
-            {
-                "title": listing.get("formattedAddress", f"{city} listing"),
-                "price": listing.get("price"),
-                "beds": listing.get("bedrooms"),
-                "baths": listing.get("bathrooms"),
-                "reasons": build_reasons(
-                    city=city,
-                    listing=listing,
-                    budget=budget,
-                    beds=beds,
-                    pets=pets,
-                    lifestyle=lifestyle,
-                    neighborhood=neighborhood,
-                ),
-                "tradeoff": build_tradeoff(
-                    listing=listing,
-                    budget=budget,
-                    beds=beds,
-                    lifestyle=lifestyle,
-                    neighborhood=neighborhood,
-                ),
-                "_score": score,
+            neighborhood = {
+                "cafe_count": 0,
+                "gym_count": 0,
+                "park_count": 0,
+                "transit_count": 0,
+                "walkability_hint": 0,
             }
-        )
+
+            if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                try:
+                    neighborhood = analyze_neighborhood(lat, lng)
+                except Exception:
+                    pass
+
+            score = score_listing(
+                listing=listing,
+                budget=budget,
+                beds=beds,
+                pets=pets,
+                lifestyle=lifestyle,
+                neighborhood=neighborhood,
+            )
+
+            enriched_matches.append(
+                {
+                    "title": listing.get("formattedAddress")
+                    or listing.get("address")
+                    or f"{city} listing",
+                    "price": listing.get("price"),
+                    "beds": listing.get("bedrooms"),
+                    "baths": listing.get("bathrooms"),
+                    "reasons": build_reasons(
+                        city=city,
+                        listing=listing,
+                        budget=budget,
+                        beds=beds,
+                        pets=pets,
+                        lifestyle=lifestyle,
+                        neighborhood=neighborhood,
+                    ),
+                    "tradeoff": build_tradeoff(
+                        listing=listing,
+                        budget=budget,
+                        beds=beds,
+                        lifestyle=lifestyle,
+                        neighborhood=neighborhood,
+                    ),
+                    "_score": score,
+                }
+            )
+        except Exception as e:
+            print("Error processing listing:", listing)
+            print("Listing error:", e)
 
     enriched_matches.sort(key=lambda x: x["_score"], reverse=True)
 
@@ -477,4 +502,3 @@ def search(payload: SearchRequest):
         },
         "matches": final_matches,
     }
-    
