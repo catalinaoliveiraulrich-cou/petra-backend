@@ -1,9 +1,16 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from dotenv import load_dotenv
+import os
 import re
+import requests
 from typing import Optional, Tuple
 
+
+load_dotenv()
+
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 
 app = FastAPI()
 
@@ -61,7 +68,6 @@ def extract_budget(query: str) -> Optional[int]:
 
     dollar_matches = re.findall(r"\$ ?(\d+)", text)
     if dollar_matches:
-        # use the first money amount mentioned as a simple fallback
         return int(dollar_matches[0])
 
     return None
@@ -128,14 +134,20 @@ def extract_pets(query: str) -> Optional[bool]:
         if phrase in text:
             return True
 
-    # if user mentions dog/cat/pet at all, assume pet-friendly matters
     if any(word in text for word in ["dog", "cat", "pet", "pets"]):
         return True
 
     return None
 
 
-def build_reasons(city: str, budget: Optional[int], beds: Optional[int], pets: Optional[bool], price: int, listing_beds: int):
+def build_reasons(
+    city: str,
+    budget: Optional[int],
+    beds: Optional[int],
+    pets: Optional[bool],
+    price: int,
+    listing_beds: int,
+):
     reasons = [f"Located in {city}"]
 
     if budget is not None and price <= budget:
@@ -155,7 +167,12 @@ def build_reasons(city: str, budget: Optional[int], beds: Optional[int], pets: O
     return reasons[:3]
 
 
-def build_tradeoff(budget: Optional[int], price: int, beds: Optional[int], listing_beds: int):
+def build_tradeoff(
+    budget: Optional[int],
+    price: int,
+    beds: Optional[int],
+    listing_beds: int,
+):
     if budget is not None and price > budget:
         return "Slightly above your preferred budget."
     if beds is not None and listing_beds < beds:
@@ -163,6 +180,61 @@ def build_tradeoff(budget: Optional[int], price: int, beds: Optional[int], listi
     if beds is not None and listing_beds > beds:
         return "More space than requested, which may increase the price."
     return "Slightly smaller living area."
+
+
+def get_nearby_places(
+    lat: float,
+    lng: float,
+    place_type: str,
+    radius: float = 800.0,
+):
+    if not GOOGLE_PLACES_API_KEY:
+        return []
+
+    url = "https://places.googleapis.com/v1/places:searchNearby"
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": "places.displayName,places.primaryType,places.location",
+    }
+
+    body = {
+        "includedTypes": [place_type],
+        "maxResultCount": 5,
+        "locationRestriction": {
+            "circle": {
+                "center": {
+                    "latitude": lat,
+                    "longitude": lng,
+                },
+                "radius": radius,
+            }
+        },
+    }
+
+    response = requests.post(url, headers=headers, json=body, timeout=20)
+    response.raise_for_status()
+    data = response.json()
+    return data.get("places", [])
+
+
+def analyze_neighborhood(lat: float, lng: float):
+    cafes = get_nearby_places(lat, lng, "cafe")
+    gyms = get_nearby_places(lat, lng, "gym")
+    parks = get_nearby_places(lat, lng, "park")
+    transit = get_nearby_places(lat, lng, "transit_station")
+
+    return {
+        "near_cafes": len(cafes) > 0,
+        "cafe_count": len(cafes),
+        "near_gyms": len(gyms) > 0,
+        "gym_count": len(gyms),
+        "near_parks": len(parks) > 0,
+        "park_count": len(parks),
+        "near_public_transport": len(transit) > 0,
+        "transit_count": len(transit),
+    }
 
 
 @app.get("/")
@@ -175,6 +247,12 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/test-places")
+def test_places():
+    lat, lng = 30.2672, -97.7431  # Austin test location
+    return analyze_neighborhood(lat, lng)
+
+
 @app.post("/search")
 def search(payload: SearchRequest):
     city, state = extract_city_state(payload.query)
@@ -182,7 +260,6 @@ def search(payload: SearchRequest):
     beds = extract_bedrooms(payload.query)
     pets = extract_pets(payload.query)
 
-    # simple placeholder listings that adapt to the user's request
     listing_1_price = budget - 100 if budget and budget > 1200 else 2100
     listing_2_price = budget + 150 if budget else 2300
 
@@ -218,67 +295,41 @@ def search(payload: SearchRequest):
                 "price": listing_1_price,
                 "beds": listing_1_beds,
                 "baths": 1,
-                "reasons": build_reasons(city, budget, beds, pets, listing_1_price, listing_1_beds),
-                "tradeoff": build_tradeoff(budget, listing_1_price, beds, listing_1_beds),
+                "reasons": build_reasons(
+                    city,
+                    budget,
+                    beds,
+                    pets,
+                    listing_1_price,
+                    listing_1_beds,
+                ),
+                "tradeoff": build_tradeoff(
+                    budget,
+                    listing_1_price,
+                    beds,
+                    listing_1_beds,
+                ),
             },
             {
                 "title": f"{city} Apartment 2",
                 "price": listing_2_price,
                 "beds": listing_2_beds,
                 "baths": 1,
-                "reasons": build_reasons(city, budget, beds, pets, listing_2_price, listing_2_beds),
-                "tradeoff": build_tradeoff(budget, listing_2_price, beds, listing_2_beds),
+                "reasons": build_reasons(
+                    city,
+                    budget,
+                    beds,
+                    pets,
+                    listing_2_price,
+                    listing_2_beds,
+                ),
+                "tradeoff": build_tradeoff(
+                    budget,
+                    listing_2_price,
+                    beds,
+                    listing_2_beds,
+                ),
             },
         ],
     }
-    def get_nearby_places(lat: float, lng: float, place_type: str, radius: float = 800.0):
-    if not GOOGLE_PLACES_API_KEY:
-        return []
-
-    url = "https://places.googleapis.com/v1/places:searchNearby"
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-        "X-Goog-FieldMask": "places.displayName,places.primaryType,places.location"
-    }
-
-    body = {
-        "includedTypes": [place_type],
-        "maxResultCount": 5,
-        "locationRestriction": {
-            "circle": {
-                "center": {
-                    "latitude": lat,
-                    "longitude": lng
-                },
-                "radius": radius
-            }
-        }
-    }
-
-    response = requests.post(url, headers=headers, json=body, timeout=20)
-    response.raise_for_status()
-    data = response.json()
-    return data.get("places", [])
-    def analyze_neighborhood(lat: float, lng: float):
-    cafes = get_nearby_places(lat, lng, "cafe")
-    gyms = get_nearby_places(lat, lng, "gym")
-    parks = get_nearby_places(lat, lng, "park")
-    transit = get_nearby_places(lat, lng, "transit_station")
-
-    return {
-        "near_cafes": len(cafes) > 0,
-        "cafe_count": len(cafes),
-        "near_gyms": len(gyms) > 0,
-        "gym_count": len(gyms),
-        "near_parks": len(parks) > 0,
-        "park_count": len(parks),
-        "near_public_transport": len(transit) > 0,
-        "transit_count": len(transit),
-    }
-    @app.get("/test-places")
-def test_places():
-    # Austin downtown test coordinates
-    lat, lng = 30.2672, -97.7431
-    return analyze_neighborhood(lat, lng)
+    
