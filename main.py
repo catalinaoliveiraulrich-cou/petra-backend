@@ -231,3 +231,54 @@ def search(payload: SearchRequest):
             },
         ],
     }
+    def get_nearby_places(lat: float, lng: float, place_type: str, radius: float = 800.0):
+    if not GOOGLE_PLACES_API_KEY:
+        return []
+
+    url = "https://places.googleapis.com/v1/places:searchNearby"
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": "places.displayName,places.primaryType,places.location"
+    }
+
+    body = {
+        "includedTypes": [place_type],
+        "maxResultCount": 5,
+        "locationRestriction": {
+            "circle": {
+                "center": {
+                    "latitude": lat,
+                    "longitude": lng
+                },
+                "radius": radius
+            }
+        }
+    }
+
+    response = requests.post(url, headers=headers, json=body, timeout=20)
+    response.raise_for_status()
+    data = response.json()
+    return data.get("places", [])
+    def analyze_neighborhood(lat: float, lng: float):
+    cafes = get_nearby_places(lat, lng, "cafe")
+    gyms = get_nearby_places(lat, lng, "gym")
+    parks = get_nearby_places(lat, lng, "park")
+    transit = get_nearby_places(lat, lng, "transit_station")
+
+    return {
+        "near_cafes": len(cafes) > 0,
+        "cafe_count": len(cafes),
+        "near_gyms": len(gyms) > 0,
+        "gym_count": len(gyms),
+        "near_parks": len(parks) > 0,
+        "park_count": len(parks),
+        "near_public_transport": len(transit) > 0,
+        "transit_count": len(transit),
+    }
+    @app.get("/test-places")
+def test_places():
+    # Austin downtown test coordinates
+    lat, lng = 30.2672, -97.7431
+    return analyze_neighborhood(lat, lng)
